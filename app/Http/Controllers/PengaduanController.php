@@ -2,66 +2,63 @@
 
 namespace App\Http\Controllers;
 
-use App\Exports\PengaduanExport;
-use App\Http\Requests\StorePengaduanRequest;
 use App\Models\Pengaduan;
-use App\Services\GoogleDriveService;
+use App\Services\GoogleDriveService; // tambahkan service
 use Illuminate\Http\Request;
-use Maatwebsite\Excel\Facades\Excel;
-use Illuminate\Support\Facades\Storage;
+
+
 
 class PengaduanController extends Controller
 {
-    // Tampilkan form pengaduan (public)
     public function create()
     {
         return view('pengaduan.create');
     }
 
-    // Simpan pengaduan dari form web
-    public function store(StorePengaduanRequest $request)
+    public function store(Request $request, GoogleDriveService $driveService)
     {
-        $data = $request->validated();
+        $request->validate([
+            'tanggal' => 'required|date',
+            'nama' => 'required|string|max:255',
+            'no_hp' => 'required|string|max:20',
+            'kategori' => 'required|string|max:100',
+            'isi_pengaduan' => 'required|string',
+            'lampiran' => 'nullable|file|mimes:jpg,jpeg,png,pdf,doc,docx,xlsx|max:4096',
+        ]);
+
+        $lampiranPath = null;
+        $lampiranDriveId = null;
 
         if ($request->hasFile('lampiran')) {
-            $data['lampiran'] = $request->file('lampiran')->store('lampiran', 'public');
+            // 1. Simpan ke lokal (storage/app/public/lampiran)
+            $lampiranPath = $request->file('lampiran')->store('lampiran', 'public');
+
+            // 2. Upload ke Google Drive
+            $filePath = storage_path('app/public/'.$lampiranPath);
+            $lampiranDriveId = $driveService->uploadFile(
+                $filePath,
+                $request->file('lampiran')->getClientOriginalName(),
+                $request->file('lampiran')->getMimeType()
+            );
         }
 
-        Pengaduan::create($data);
+        // Simpan data ke database
+        Pengaduan::create([
+            'tanggal' => $request->tanggal,
+            'nama' => $request->nama,
+            'no_hp' => $request->no_hp,
+            'kategori' => $request->kategori,
+            'isi_pengaduan' => $request->isi_pengaduan,
+            'lampiran' => $lampiranPath,          // path file lokal
+            'lampiran_drive_id' => $lampiranDriveId, // ID file di Google Drive
+        ]);
 
-        return redirect()->back()->with('success', 'Pengaduan berhasil dikirim!');
+        return redirect('/pengaduan')->with('success', 'Pengaduan berhasil dikirim! File tersimpan lokal & Google Drive.');
     }
 
-    // Daftar pengaduan (admin)
     public function index()
     {
-        $pengaduans = Pengaduan::latest()->paginate(15);
+        $pengaduans = Pengaduan::latest()->get();
         return view('pengaduan.index', compact('pengaduans'));
-    }
-
-    // Download Excel hari ini
-    public function export()
-    {
-        $fileName = 'pengaduan-'.date('Y-m-d').'.xlsx';
-        return Excel::download(new PengaduanExport, $fileName);
-    }
-
-    // Export lalu upload ke Google Drive (dipanggil manual atau oleh command)
-    public function exportAndUpload(GoogleDriveService $driveService)
-    {
-        $fileName = 'pengaduan-'.date('Y-m-d').'.xlsx';
-        // simpan temporary di storage/app/
-        Excel::store(new PengaduanExport, $fileName, 'local');
-
-        $filePath = storage_path('app/'.$fileName);
-
-        $fileId = $driveService->uploadFile($filePath, $fileName);
-
-        // hapus file sementara
-        if (file_exists($filePath)) {
-            unlink($filePath);
-        }
-
-        return redirect()->back()->with('success', "Export selesai & diupload ke Google Drive (fileId: {$fileId})");
     }
 }

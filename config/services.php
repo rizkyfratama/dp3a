@@ -35,4 +35,9 @@ return [
         ],
     ],
 
+    'google' => [
+    'folder_id' => env('GOOGLE_DRIVE_FOLDER_ID', null),
+],
+
+
 ];

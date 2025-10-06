@@ -2,76 +2,79 @@
 
 namespace App\Services;
 
-use Google_Client;
-use Google_Service_Drive;
-use Google_Service_Drive_DriveFile;
-use Illuminate\Support\Facades\Log;
+use Google\Client as Google_Client;
+use Google\Service\Drive as Google_Service_Drive;
+use Google\Service\Drive\DriveFile as Google_Service_Drive_DriveFile;
+use Illuminate\Support\Facades\Session;
 
 class GoogleDriveService
 {
-    protected Google_Client $client;
-    protected Google_Service_Drive $service;
-
-    public function __construct()
+    private function getClient()
     {
-        $this->client = new Google_Client();
+        $client = new Google_Client();
 
-        // Jika credential diberikan via env base64
-        if (env('GOOGLE_CREDENTIALS')) {
-            try {
-                $credentials = base64_decode(env('GOOGLE_CREDENTIALS'));
-                $path = storage_path('app/google/credentials.json');
-                if (!is_dir(dirname($path))) {
-                    mkdir(dirname($path), 0755, true);
+        // Lokasi file kredensial Google
+        $client->setAuthConfig(storage_path('app/google/credentials_oauth.json'));
+
+        // Scope akses Google Drive (hanya file yang dibuat oleh aplikasi ini)
+        $client->addScope(Google_Service_Drive::DRIVE_FILE);
+        $client->setAccessType('offline');
+        $client->setPrompt('select_account consent');
+
+        // URL callback setelah login
+        $client->setRedirectUri(route('google.callback'));
+
+        // Gunakan token dari session jika sudah login
+        if (Session::has('google_drive_token')) {
+            $client->setAccessToken(Session::get('google_drive_token'));
+
+            // Jika token kadaluarsa, coba refresh
+            if ($client->isAccessTokenExpired()) {
+                if ($client->getRefreshToken()) {
+                    $newToken = $client->fetchAccessTokenWithRefreshToken($client->getRefreshToken());
+                    Session::put('google_drive_token', $newToken);
+                    $client->setAccessToken($newToken);
+                } else {
+                    throw new \Exception("Google Drive token expired. Silakan login ulang.");
                 }
-                file_put_contents($path, $credentials);
-                $this->client->setAuthConfig($path);
-            } catch (\Throwable $e) {
-                Log::error('GoogleDriveService: gagal menulis credentials dari env - '.$e->getMessage());
             }
-        } else {
-            // fallback ke file yang ada di storage/app/google/credentials.json
-            $path = storage_path('app/google/credentials.json');
-            if (!file_exists($path)) {
-                throw new \Exception('Google credentials tidak ditemukan. Masukkan GOOGLE_CREDENTIALS (base64) atau upload credentials.json ke storage/app/google/');
-            }
-            $this->client->setAuthConfig($path);
         }
 
-        $this->client->addScope(Google_Service_Drive::DRIVE_FILE);
-
-        // Opsi: set access type offline jika menggunakan refresh token, dsb.
-        $this->service = new Google_Service_Drive($this->client);
+        return $client;
     }
 
     /**
-     * Upload file ke Google Drive. Mengembalikan fileId
-     * @param string $filePath absolute path file di server
-     * @param string $fileName nama file di Drive
-     * @param string|null $mimeType
-     * @return string fileId
+     * Upload file ke folder Google Drive “Pengaduan DP3A”
      */
-    public function uploadFile(string $filePath, string $fileName, ?string $mimeType = null): string
+    public function uploadFile($filePath, $fileName, $mimeType)
     {
-        if (!file_exists($filePath)) {
-            throw new \Exception("File tidak ditemukan: {$filePath}");
-        }
+        $client = $this->getClient();
+        $service = new Google_Service_Drive($client);
 
-        $mimeType = $mimeType ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        // 📁 ID folder Google Drive tujuan
+        $folderId = '1w4-gTdLpK0zSr6x3SWCVFAZOMozINvum';
 
+        // Metadata file
         $fileMetadata = new Google_Service_Drive_DriveFile([
-            'name' => $fileName
+            'name' => $fileName,
+            'parents' => [$folderId],
         ]);
 
+        // Isi file
         $content = file_get_contents($filePath);
 
-        $file = $this->service->files->create($fileMetadata, [
+        // Upload file ke Drive
+        $file = $service->files->create($fileMetadata, [
             'data' => $content,
             'mimeType' => $mimeType,
-            'uploadType' => 'multipart'
+            'uploadType' => 'multipart',
+            'fields' => 'id, webViewLink',
         ]);
 
-        // return ID file
-        return $file->id;
+        // Kembalikan ID dan link file Drive
+        return [
+            'id' => $file->id,
+            'link' => $file->webViewLink
+        ];
     }
 }
